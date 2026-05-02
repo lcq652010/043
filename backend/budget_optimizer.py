@@ -31,6 +31,9 @@ class BudgetOptimizer:
     def __init__(self):
         pass
 
+    def _round2(self, value: float) -> float:
+        return round(value, 2)
+
     def _calculate_efficiency(self, channel: Channel) -> float:
         if channel.click_cost > 0:
             return channel.conversion_rate / channel.click_cost
@@ -47,7 +50,7 @@ class BudgetOptimizer:
             }
 
         allocations = {ch.name: ch.min_budget for ch in channels}
-        remaining_budget = total_budget - total_min_budget
+        remaining_after_min = total_budget - total_min_budget
 
         channels_by_efficiency = sorted(
             channels,
@@ -56,19 +59,19 @@ class BudgetOptimizer:
         )
 
         for channel in channels_by_efficiency:
-            if remaining_budget <= 0:
+            if remaining_after_min <= 0:
                 break
 
-            additional_budget_needed = channel.max_budget - allocations[channel.name]
-            if additional_budget_needed <= 0:
+            additional_needed = channel.max_budget - allocations[channel.name]
+            if additional_needed <= 0:
                 continue
 
-            if remaining_budget >= additional_budget_needed:
+            if remaining_after_min >= additional_needed:
                 allocations[channel.name] = channel.max_budget
-                remaining_budget -= additional_budget_needed
+                remaining_after_min -= additional_needed
             else:
-                allocations[channel.name] += remaining_budget
-                remaining_budget = 0
+                allocations[channel.name] += remaining_after_min
+                remaining_after_min = 0
 
         results = []
         total_allocated = 0.0
@@ -76,7 +79,7 @@ class BudgetOptimizer:
         total_expected_clicks = 0.0
 
         for channel in channels:
-            allocated = round(allocations[channel.name], 2)
+            allocated = self._round2(allocations[channel.name])
             total_allocated += allocated
 
             if channel.click_cost > 0:
@@ -95,49 +98,46 @@ class BudgetOptimizer:
 
             results.append(AllocationResult(
                 channel_name=channel.name,
-                allocated_budget=round(allocated, 2),
-                expected_clicks=round(expected_clicks, 2),
-                expected_conversions=round(expected_conversions, 2),
-                budget_utilization=round(utilization, 2)
+                allocated_budget=self._round2(allocated),
+                expected_clicks=self._round2(expected_clicks),
+                expected_conversions=self._round2(expected_conversions),
+                budget_utilization=self._round2(utilization)
             ))
 
-        remaining_budget = total_budget - total_allocated
+        total_allocated = self._round2(total_allocated)
+        remaining_budget = self._round2(total_budget - total_allocated)
 
         return {
             "success": True,
             "algorithm_used": "greedy",
-            "total_budget": round(total_budget, 2),
-            "total_allocated": round(total_allocated, 2),
-            "remaining_budget": round(remaining_budget, 2),
-            "total_expected_clicks": round(total_expected_clicks, 2),
-            "total_expected_conversions": round(total_expected_conversions, 2),
+            "total_budget": self._round2(total_budget),
+            "total_allocated": total_allocated,
+            "remaining_budget": remaining_budget,
+            "total_expected_clicks": self._round2(total_expected_clicks),
+            "total_expected_conversions": self._round2(total_expected_conversions),
             "allocations": [
                 {
                     "channel_name": r.channel_name,
-                    "allocated_budget": round(r.allocated_budget, 2),
-                    "expected_clicks": round(r.expected_clicks, 2),
-                    "expected_conversions": round(r.expected_conversions, 2),
-                    "budget_utilization": round(r.budget_utilization, 2)
+                    "allocated_budget": self._round2(r.allocated_budget),
+                    "expected_clicks": self._round2(r.expected_clicks),
+                    "expected_conversions": self._round2(r.expected_conversions),
+                    "budget_utilization": self._round2(r.budget_utilization)
                 }
                 for r in results
             ]
         }
 
     def _optimize_ortools(self, channels: List[Channel], total_budget: float) -> Dict:
-        if not channels:
-            return {"success": False, "message": "请至少添加一个广告渠道"}
-
-        if total_budget <= 0:
-            return {"success": False, "message": "总预算必须大于0"}
-
-        total_max_budget = sum(ch.max_budget for ch in channels)
         total_min_budget = sum(ch.min_budget for ch in channels)
+        total_max_budget = sum(ch.max_budget for ch in channels)
 
         if total_budget < total_min_budget:
             return {
                 "success": False,
                 "message": f"总预算({total_budget:.2f})不能小于所有渠道最小预算之和({total_min_budget:.2f})"
             }
+
+        effective_budget = min(total_budget, total_max_budget)
 
         solver = pywraplp.Solver.CreateSolver('SCIP')
         if not solver:
@@ -155,7 +155,7 @@ class BudgetOptimizer:
         total_allocation = solver.Sum(
             budget_vars[ch.name] for ch in channels
         )
-        solver.Add(total_allocation <= total_budget)
+        solver.Add(total_allocation <= effective_budget)
         solver.Add(total_allocation >= total_min_budget)
 
         objective_terms = []
@@ -174,7 +174,7 @@ class BudgetOptimizer:
         status = solver.Solve()
 
         if status not in [pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE]:
-            return {"success": False, "message": "无法找到最优解，请检查输入参数"}
+            return self._optimize_greedy(channels, total_budget)
 
         results = []
         total_allocated = 0.0
@@ -182,7 +182,8 @@ class BudgetOptimizer:
         total_expected_clicks = 0.0
 
         for channel in channels:
-            allocated = budget_vars[channel.name].solution_value()
+            allocated_raw = budget_vars[channel.name].solution_value()
+            allocated = self._round2(allocated_raw)
             total_allocated += allocated
 
             if channel.click_cost > 0:
@@ -201,35 +202,49 @@ class BudgetOptimizer:
 
             results.append(AllocationResult(
                 channel_name=channel.name,
-                allocated_budget=round(allocated, 2),
-                expected_clicks=round(expected_clicks, 2),
-                expected_conversions=round(expected_conversions, 2),
-                budget_utilization=round(utilization, 2)
+                allocated_budget=self._round2(allocated),
+                expected_clicks=self._round2(expected_clicks),
+                expected_conversions=self._round2(expected_conversions),
+                budget_utilization=self._round2(utilization)
             ))
 
-        remaining_budget = total_budget - total_allocated
+        total_allocated = self._round2(total_allocated)
+        remaining_budget = self._round2(total_budget - total_allocated)
 
         return {
             "success": True,
             "algorithm_used": "linear_programming",
-            "total_budget": round(total_budget, 2),
-            "total_allocated": round(total_allocated, 2),
-            "remaining_budget": round(remaining_budget, 2),
-            "total_expected_clicks": round(total_expected_clicks, 2),
-            "total_expected_conversions": round(total_expected_conversions, 2),
+            "total_budget": self._round2(total_budget),
+            "total_allocated": total_allocated,
+            "remaining_budget": remaining_budget,
+            "total_expected_clicks": self._round2(total_expected_clicks),
+            "total_expected_conversions": self._round2(total_expected_conversions),
             "allocations": [
                 {
                     "channel_name": r.channel_name,
-                    "allocated_budget": round(r.allocated_budget, 2),
-                    "expected_clicks": round(r.expected_clicks, 2),
-                    "expected_conversions": round(r.expected_conversions, 2),
-                    "budget_utilization": round(r.budget_utilization, 2)
+                    "allocated_budget": self._round2(r.allocated_budget),
+                    "expected_clicks": self._round2(r.expected_clicks),
+                    "expected_conversions": self._round2(r.expected_conversions),
+                    "budget_utilization": self._round2(r.budget_utilization)
                 }
                 for r in results
             ]
         }
 
     def optimize(self, channels: List[Channel], total_budget: float) -> Dict:
+        if not channels:
+            return {"success": False, "message": "请至少添加一个广告渠道"}
+
+        if total_budget <= 0:
+            return {"success": False, "message": "总预算必须大于0"}
+
+        for ch in channels:
+            if ch.min_budget > ch.max_budget:
+                return {
+                    "success": False,
+                    "message": f"渠道 '{ch.name}' 的最小预算({ch.min_budget})不能大于最大预算({ch.max_budget})"
+                }
+
         if HAS_ORTOOLS:
             return self._optimize_ortools(channels, total_budget)
         else:
