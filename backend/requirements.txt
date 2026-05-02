@@ -1,0 +1,8 @@
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# 可选：OR-Tools 线性规划求解器（提供更精确的优化结果）
+# 如果不安装，系统会自动使用备用的贪心算法
+# 安装命令: pip install ortools>=9.8.0

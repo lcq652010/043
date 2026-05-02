@@ -1,0 +1,463 @@
+<template>
+  <div class="app-container">
+    <el-card class="header-card">
+      <h1 class="title">广告预算智能分配系统</h1>
+      <p class="subtitle">基于线性规划算法，最大化您的广告转化效果</p>
+    </el-card>
+
+    <el-row :gutter="20">
+      <el-col :span="16">
+        <el-card class="section-card">
+          <template #header>
+            <div class="card-header">
+              <span class="card-title">广告渠道配置</span>
+              <el-button type="primary" @click="addChannel" :icon="Plus">
+                添加渠道
+              </el-button>
+            </div>
+          </template>
+
+          <el-table :data="channels" border style="width: 100%">
+            <el-table-column label="序号" type="index" width="60" align="center" />
+            <el-table-column label="渠道名称" width="150">
+              <template #default="scope">
+                <el-input
+                  v-model="scope.row.name"
+                  placeholder="如：抖音"
+                  size="small"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="历史转化率 (0-1)">
+              <template #default="scope">
+                <el-input-number
+                  v-model="scope.row.conversion_rate"
+                  :min="0.0001"
+                  :max="1"
+                  :step="0.01"
+                  :precision="4"
+                  size="small"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="点击成本 (元)">
+              <template #default="scope">
+                <el-input-number
+                  v-model="scope.row.click_cost"
+                  :min="0.01"
+                  :step="0.1"
+                  :precision="2"
+                  size="small"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="最大预算上限 (元)">
+              <template #default="scope">
+                <el-input-number
+                  v-model="scope.row.max_budget"
+                  :min="0"
+                  :step="1000"
+                  size="small"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" align="center">
+              <template #default="scope">
+                <el-button
+                  type="danger"
+                  :icon="Delete"
+                  circle
+                  size="small"
+                  @click="removeChannel(scope.$index)"
+                  :disabled="channels.length <= 1"
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-divider content-position="left">
+            <span class="divider-text">快速示例数据</span>
+          </el-divider>
+
+          <el-button-group>
+            <el-button @click="loadExample1">示例1：3个渠道</el-button>
+            <el-button @click="loadExample2">示例2：5个渠道</el-button>
+          </el-button-group>
+        </el-card>
+      </el-col>
+
+      <el-col :span="8">
+        <el-card class="section-card">
+          <template #header>
+            <span class="card-title">预算设置</span>
+          </template>
+
+          <el-form label-width="120px">
+            <el-form-item label="总预算金额">
+              <el-input-number
+                v-model="totalBudget"
+                :min="1000"
+                :step="10000"
+                size="large"
+                style="width: 100%"
+              />
+              <span class="unit">元</span>
+            </el-form-item>
+
+            <el-form-item>
+              <el-button
+                type="primary"
+                size="large"
+                @click="calculate"
+                :loading="loading"
+                style="width: 100%"
+              >
+                {{ loading ? '计算中...' : '开始计算' }}
+              </el-button>
+            </el-form-item>
+          </el-form>
+
+          <el-divider />
+
+          <div class="tips">
+            <el-alert
+              title="算法说明"
+              type="info"
+              :closable="false"
+              show-icon
+            >
+              <template #default>
+                <p>系统使用 Google OR-Tools 线性规划求解器：</p>
+                <ul>
+                  <li>目标：最大化总转化次数</li>
+                  <li>约束：不超过总预算、各渠道预算上限</li>
+                  <li>策略：转化率越高的渠道分配越多</li>
+                </ul>
+              </template>
+            </el-alert>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-card v-if="result" class="result-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">计算结果</span>
+          <el-tag type="success">优化完成</el-tag>
+        </div>
+      </template>
+
+      <el-row :gutter="20" class="summary-row">
+        <el-col :span="6">
+          <div class="summary-item">
+            <div class="summary-label">总预算</div>
+            <div class="summary-value">{{ formatCurrency(result.total_budget) }}</div>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="summary-item">
+            <div class="summary-label">已分配</div>
+            <div class="summary-value highlight">{{ formatCurrency(result.total_allocated) }}</div>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="summary-item">
+            <div class="summary-label">预计总转化</div>
+            <div class="summary-value success">{{ formatNumber(result.total_expected_conversions) }} 次</div>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="summary-item">
+            <div class="summary-label">预计总点击</div>
+            <div class="summary-value">{{ formatNumber(result.total_expected_clicks) }} 次</div>
+          </div>
+        </el-col>
+      </el-row>
+
+      <el-table :data="result.allocations" border style="width: 100%" class="result-table">
+        <el-table-column label="渠道名称" prop="channel_name" width="150" />
+        <el-table-column label="分配预算 (元)" width="180">
+          <template #default="scope">
+            <span class="budget-amount">{{ formatCurrency(scope.row.allocated_budget) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="预算使用率">
+          <template #default="scope">
+            <el-progress
+              :percentage="Math.round(scope.row.budget_utilization)"
+              :color="getProgressColor(scope.row.budget_utilization)"
+              :stroke-width="18"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="预计点击数" prop="expected_clicks" width="150">
+          <template #default="scope">
+            {{ formatNumber(scope.row.expected_clicks) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="预计转化数" width="150">
+          <template #default="scope">
+            <span class="conversion-number">{{ formatNumber(scope.row.expected_conversions) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div v-if="result.remaining_budget > 0" class="remaining-note">
+        <el-alert
+          :title="'剩余预算 ' + formatCurrency(result.remaining_budget) + ' 未分配（因各渠道已达上限）'"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+      </div>
+    </el-card>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, computed } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Plus, Delete } from '@element-plus/icons-vue'
+import axios from 'axios'
+
+const formatNumber = (num, decimals = 2) => {
+  if (num === null || num === undefined) return '0.00'
+  return Number(num).toFixed(decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+const formatCurrency = (num) => {
+  return '¥' + formatNumber(num, 2)
+}
+
+const channels = reactive([
+  {
+    name: '抖音',
+    conversion_rate: 0.05,
+    click_cost: 2.5,
+    max_budget: 50000
+  }
+])
+
+const totalBudget = ref(100000)
+const loading = ref(false)
+const result = ref(null)
+
+const addChannel = () => {
+  channels.push({
+    name: '',
+    conversion_rate: 0.03,
+    click_cost: 2.0,
+    max_budget: 30000
+  })
+}
+
+const removeChannel = (index) => {
+  channels.splice(index, 1)
+}
+
+const loadExample1 = () => {
+  channels.splice(0, channels.length)
+  channels.push(
+    { name: '抖音', conversion_rate: 0.05, click_cost: 2.5, max_budget: 50000 },
+    { name: '小红书', conversion_rate: 0.08, click_cost: 3.0, max_budget: 40000 },
+    { name: '微信', conversion_rate: 0.03, click_cost: 1.5, max_budget: 30000 }
+  )
+  totalBudget.value = 100000
+  ElMessage.success('已加载示例数据：3个渠道')
+}
+
+const loadExample2 = () => {
+  channels.splice(0, channels.length)
+  channels.push(
+    { name: '抖音', conversion_rate: 0.05, click_cost: 2.5, max_budget: 50000 },
+    { name: '小红书', conversion_rate: 0.08, click_cost: 3.0, max_budget: 40000 },
+    { name: '微信', conversion_rate: 0.03, click_cost: 1.5, max_budget: 30000 },
+    { name: '快手', conversion_rate: 0.04, click_cost: 2.0, max_budget: 35000 },
+    { name: '微博', conversion_rate: 0.02, click_cost: 1.8, max_budget: 25000 }
+  )
+  totalBudget.value = 150000
+  ElMessage.success('已加载示例数据：5个渠道')
+}
+
+const calculate = async () => {
+  if (channels.length === 0) {
+    ElMessage.warning('请至少添加一个广告渠道')
+    return
+  }
+
+  for (let i = 0; i < channels.length; i++) {
+    const ch = channels[i]
+    if (!ch.name.trim()) {
+      ElMessage.warning(`请填写第 ${i + 1} 个渠道的名称`)
+      return
+    }
+    if (ch.conversion_rate <= 0 || ch.conversion_rate > 1) {
+      ElMessage.warning(`渠道 "${ch.name}" 的转化率必须在 0-1 之间`)
+      return
+    }
+    if (ch.click_cost <= 0) {
+      ElMessage.warning(`渠道 "${ch.name}" 的点击成本必须大于 0`)
+      return
+    }
+    if (ch.max_budget <= 0) {
+      ElMessage.warning(`渠道 "${ch.name}" 的最大预算必须大于 0`)
+      return
+    }
+  }
+
+  loading.value = true
+  result.value = null
+
+  try {
+    const response = await axios.post('/api/allocate', {
+      channels: channels.map(ch => ({
+        name: ch.name,
+        conversion_rate: ch.conversion_rate,
+        click_cost: ch.click_cost,
+        max_budget: ch.max_budget
+      })),
+      total_budget: totalBudget.value
+    })
+
+    result.value = response.data
+    ElMessage.success('计算完成！')
+  } catch (error) {
+    const message = error.response?.data?.detail || error.message || '计算失败'
+    ElMessage.error(message)
+  } finally {
+    loading.value = false
+  }
+}
+
+const getProgressColor = (percentage) => {
+  if (percentage >= 90) return '#67c23a'
+  if (percentage >= 60) return '#409eff'
+  if (percentage >= 30) return '#e6a23c'
+  return '#909399'
+}
+</script>
+
+<style scoped>
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.header-card {
+  margin-bottom: 20px;
+  text-align: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+}
+
+.title {
+  margin: 0;
+  color: white;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 10px 0 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+}
+
+.section-card {
+  margin-bottom: 20px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-title {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.divider-text {
+  color: #909399;
+  font-size: 13px;
+}
+
+.unit {
+  margin-left: 8px;
+  color: #606266;
+}
+
+.tips {
+  margin-top: 20px;
+}
+
+.tips ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: #606266;
+}
+
+.tips li {
+  margin: 4px 0;
+}
+
+.result-card {
+  margin-top: 20px;
+}
+
+.summary-row {
+  margin-bottom: 20px;
+}
+
+.summary-item {
+  text-align: center;
+  padding: 20px;
+  background: #f5f7fa;
+  border-radius: 8px;
+}
+
+.summary-label {
+  color: #909399;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.summary-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.summary-value.highlight {
+  color: #409eff;
+}
+
+.summary-value.success {
+  color: #67c23a;
+}
+
+.result-table {
+  margin-top: 20px;
+}
+
+.budget-amount {
+  font-weight: 600;
+  color: #409eff;
+}
+
+.conversion-number {
+  font-weight: 600;
+  color: #67c23a;
+}
+
+.remaining-note {
+  margin-top: 20px;
+}
+</style>
